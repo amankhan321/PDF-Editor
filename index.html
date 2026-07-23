@@ -1,0 +1,754 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Proofsheet — PDF text editor with OCR</title>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/4.1.4/tesseract.min.js"></script>
+
+<style>
+  :root{
+    --ink:#16181d; --panel:#1b1d22; --panel-2:#24272e;
+    --signal:#1f5eff; --caution:#c8791a;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{font-family:var(--sans);background:var(--panel);color:#e8e6e0;
+       display:flex;flex-direction:column;overflow:hidden}
+
+  header{display:flex;align-items:center;gap:12px;padding:10px 14px;
+         background:var(--panel);border-bottom:1px solid #33373f;flex-wrap:wrap}
+  .brand{font-family:var(--mono);font-size:12px;letter-spacing:.14em;
+         text-transform:uppercase;color:#9aa0ac;white-space:nowrap}
+  .brand b{color:#f2f0e9;font-weight:600}
+  .grow{flex:1}
+
+  button,label.btn{font-family:var(--mono);font-size:11.5px;letter-spacing:.04em;
+    background:var(--panel-2);color:#dcdad4;border:1px solid #3c4049;border-radius:3px;
+    padding:7px 11px;cursor:pointer;white-space:nowrap;transition:background .12s,border-color .12s}
+  button:hover,label.btn:hover{background:#30343d;border-color:#565c68}
+  button:disabled{opacity:.35;cursor:not-allowed}
+  button.on{background:var(--signal);border-color:var(--signal);color:#fff}
+  button.go{background:#e8e6e0;color:#16181d;border-color:#e8e6e0;font-weight:600}
+  button.go:hover{background:#fff}
+  button:focus-visible,label.btn:focus-within{outline:2px solid var(--signal);outline-offset:2px}
+  input[type=file]{display:none}
+  .seg{display:flex;border:1px solid #3c4049;border-radius:3px;overflow:hidden}
+  .seg button{border:0;border-radius:0;border-right:1px solid #3c4049}
+  .seg button:last-child{border-right:0}
+
+  main{flex:1;display:flex;min-height:0}
+  #stage{flex:1;overflow:auto;padding:26px 20px 80px;
+    background:repeating-linear-gradient(45deg,#1e2027 0 8px,#1b1d22 8px 16px);
+    display:flex;flex-direction:column;align-items:center;gap:24px}
+  #drop{margin:auto;text-align:center;max-width:470px;padding:40px 30px;
+        border:1px dashed #454a55;border-radius:6px;background:#1e2128}
+  #drop h1{font-size:19px;margin:0 0 8px;font-weight:600}
+  #drop p{color:#8b919d;font-size:13.5px;line-height:1.6;margin:0 0 20px}
+  #drop.hot{border-color:var(--signal);background:#1b2333}
+
+  .page{position:relative;background:#fff;box-shadow:0 1px 0 #000,0 14px 34px rgba(0,0,0,.5)}
+  .page canvas{display:block}
+  .layer{position:absolute;inset:0}
+
+  /* one editable field per visual LINE */
+  .ln{
+    position:absolute;white-space:pre;line-height:1;
+    color:transparent;background:transparent;
+    display:flex;align-items:center;
+    caret-color:var(--signal);cursor:text;outline:none;overflow:visible;
+  }
+  .ln:hover{box-shadow:inset 0 -1px 0 rgba(31,94,255,.45)}
+  .ln.live{color:var(--ink)}            /* opaque cover engaged */
+  .ln:focus{box-shadow:0 0 0 1.5px var(--signal)}
+  .ln.dirty{box-shadow:inset 0 -2px 0 var(--signal)}
+  .ln.dirty.sub{box-shadow:inset 0 -2px 0 var(--caution)}
+  .ln.hit{box-shadow:inset 0 0 0 2px #e0b53a}
+
+  .mask{position:absolute;border:1px dashed rgba(0,0,0,.25)}
+  .newbox{position:absolute;color:var(--ink);background:rgba(255,255,255,.96);
+    border:1px dashed var(--signal);padding:1px 2px;white-space:pre;line-height:1.1;outline:none}
+  .pnum{position:absolute;top:-19px;left:0;font-family:var(--mono);font-size:10.5px;
+        color:#7d838f;letter-spacing:.1em}
+  .ocrflag{position:absolute;top:-19px;right:0;font-family:var(--mono);font-size:10.5px;
+        color:var(--caution);letter-spacing:.06em}
+
+  aside{width:290px;flex:none;background:var(--panel);border-left:1px solid #33373f;
+        overflow-y:auto;padding:16px 14px 40px}
+  aside h2{font-family:var(--mono);font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;
+           color:#7d838f;margin:22px 0 9px;font-weight:500}
+  aside h2:first-child{margin-top:0}
+  .field{display:flex;gap:6px;margin-bottom:7px}
+  .field input[type=text]{flex:1;min-width:0;font-family:var(--mono);font-size:12px;
+    background:#14161a;border:1px solid #363a43;color:#e8e6e0;padding:7px 8px;border-radius:3px}
+  .field input:focus{outline:none;border-color:var(--signal)}
+  .note{font-size:11.5px;color:#7d838f;line-height:1.55;margin:8px 0 0}
+  .legend{display:flex;align-items:center;gap:8px;font-size:11.5px;color:#9aa0ac;margin:6px 0}
+  .sw{width:22px;height:3px;border-radius:2px;flex:none}
+  #log{font-family:var(--mono);font-size:10.5px;line-height:1.7;color:#8b919d;
+    max-height:160px;overflow:auto;background:#14161a;border:1px solid #2b2f37;
+    border-radius:3px;padding:8px;white-space:pre-wrap}
+  .bar{height:3px;background:#2b2f37;border-radius:2px;overflow:hidden;margin-top:8px;display:none}
+  .bar i{display:block;height:100%;background:var(--signal);width:0%;transition:width .2s}
+  .chk{display:flex;align-items:center;gap:8px;font-size:12px;color:#b6bac2;margin:8px 0}
+
+  footer{padding:7px 14px;background:#14161a;border-top:1px solid #2b2f37;
+    font-family:var(--mono);font-size:11px;color:#7d838f;display:flex;gap:16px;
+    align-items:center;flex-wrap:wrap}
+  footer b{color:#c9c6bf;font-weight:500}
+
+  @media (max-width:820px){
+    aside{position:fixed;right:0;top:0;bottom:0;z-index:20;transform:translateX(100%);transition:transform .2s}
+    aside.open{transform:none}
+    #stage{padding:18px 8px 70px}
+  }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+<header>
+  <div class="brand"><b>Proofsheet</b> · pdf text editor</div>
+  <label class="btn" tabindex="0">Open PDF<input type="file" id="file" accept="application/pdf"></label>
+
+  <div class="seg">
+    <button id="prev" disabled>◀</button>
+    <button id="pageInfo" disabled style="min-width:84px">— / —</button>
+    <button id="next" disabled>▶</button>
+  </div>
+  <div class="seg">
+    <button id="zoomOut" disabled>−</button>
+    <button id="zoomVal" disabled style="min-width:56px">100%</button>
+    <button id="zoomIn" disabled>+</button>
+  </div>
+
+  <button id="tEdit" class="on" disabled>Edit text</button>
+  <button id="tAdd" disabled>Add text</button>
+  <button id="tErase" disabled>Erase</button>
+  <button id="undo" disabled>Undo</button>
+
+  <div class="grow"></div>
+  <button id="panelToggle" style="display:none">Panel</button>
+  <button id="save" class="go" disabled>Download edited PDF</button>
+</header>
+
+<main>
+  <div id="stage">
+    <div id="drop">
+      <h1>Drop a PDF here</h1>
+      <p>Each visual line becomes one editable field. Edit a line and the whole original line is painted out and redrawn — nothing from the old text can show through. Lines you never touch are copied out untouched.</p>
+      <label class="btn" tabindex="0">Choose a file<input type="file" id="file2" accept="application/pdf"></label>
+    </div>
+  </div>
+
+  <aside id="panel">
+    <h2>Find and replace</h2>
+    <div class="field"><input type="text" id="find" placeholder="find"></div>
+    <div class="field"><input type="text" id="repl" placeholder="replace with"></div>
+    <div class="field">
+      <button id="doFind" style="flex:1" disabled>Highlight</button>
+      <button id="doRepl" style="flex:1" disabled>Replace all</button>
+    </div>
+
+    <h2>Scanned pages</h2>
+    <button id="ocrPage" style="width:100%;margin-bottom:6px" disabled>Run OCR on this page</button>
+    <button id="ocrAll" style="width:100%" disabled>Run OCR on all pages</button>
+    <div class="bar" id="ocrBar"><i></i></div>
+    <p class="note">Use this only when a page has no selectable text. Every OCR word is a guess — read them before you trust them.</p>
+
+    <h2>Paint-out colour</h2>
+    <label class="chk"><input type="checkbox" id="autoBg" checked> Sample each line's own background</label>
+    <div class="field">
+      <input type="color" id="eraseColor" value="#ffffff"
+             style="width:44px;height:34px;background:#14161a;border:1px solid #363a43;border-radius:3px;padding:2px">
+      <button id="pick" style="flex:1">Pick from page</button>
+    </div>
+    <p class="note">With sampling on, the colour behind each line is read from the rendered page, so edits on tinted or shaded backgrounds stay invisible.</p>
+
+    <h2>Marks</h2>
+    <div class="legend"><span class="sw" style="background:var(--signal)"></span>Edited — line redrawn</div>
+    <div class="legend"><span class="sw" style="background:var(--caution)"></span>Font substituted on export</div>
+    <div class="legend"><span class="sw" style="background:#e0b53a"></span>Search match</div>
+
+    <h2>Activity</h2>
+    <div id="log">Waiting for a file.</div>
+  </aside>
+</main>
+
+<footer>
+  <span>Runs entirely in this tab. <b>No upload, no account, no page limit.</b></span>
+  <span class="grow"></span>
+  <span id="stat">idle</span>
+</footer>
+
+<script>
+const PDFLIB = window.PDFLib;
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+const $ = s => document.querySelector(s);
+const stage = $("#stage");
+
+const S = {
+  bytes:null, doc:null, pages:[], n:0, cur:1, scale:1.35,
+  tool:"edit", history:[], eraseColor:"#ffffff", autoBg:true, picking:false
+};
+
+const log = m => {
+  const t=new Date().toLocaleTimeString([],{hour12:false});
+  $("#log").textContent = `${t}  ${m}\n` + $("#log").textContent;
+};
+const stat = t => $("#stat").textContent = t;
+
+/* ── load ────────────────────────────────────────────────── */
+for (const id of ["#file","#file2"])
+  $(id).addEventListener("change", e => { const f=e.target.files[0]; if(f) load(f); });
+
+stage.addEventListener("dragover", e=>{e.preventDefault(); $("#drop")?.classList.add("hot");});
+stage.addEventListener("dragleave", ()=> $("#drop")?.classList.remove("hot"));
+stage.addEventListener("drop", e=>{
+  e.preventDefault();
+  const f=e.dataTransfer.files[0];
+  if(f && f.type==="application/pdf") load(f);
+});
+
+async function load(file){
+  stat("reading…"); log(`opening ${file.name} (${(file.size/1024).toFixed(0)} KB)`);
+  const buf = await file.arrayBuffer();
+  S.bytes = buf.slice(0);
+  try { S.doc = await pdfjsLib.getDocument({data:buf.slice(0)}).promise; }
+  catch(err){ log("could not read this file: "+err.message); stat("failed"); return; }
+
+  S.n=S.doc.numPages; S.pages=[]; S.history=[];
+
+  for(let i=1;i<=S.n;i++){
+    const pg  = await S.doc.getPage(i);
+    const vp1 = pg.getViewport({scale:1});
+    const tc  = await pg.getTextContent();
+
+    const runs=[];
+    tc.items.forEach(it=>{
+      if(!it.str || !it.str.trim()) return;
+      const t=it.transform;
+      const size=Math.hypot(t[2],t[3]) || it.height || 10;
+      runs.push({
+        str:it.str, x:t[4], y:t[5], w:it.width, size,
+        font:it.fontName||"",
+        skew: Math.abs(t[1])>0.01 || Math.abs(t[2])>0.01
+      });
+    });
+
+    S.pages.push({
+      num:i, pdfPage:pg, W:vp1.width, H:vp1.height,
+      lines: groupLines(runs, i),
+      masks:[], added:[], ocr:false,
+      hasText: runs.length>0, el:null
+    });
+  }
+
+  $("#drop")?.remove();
+  ["prev","next","pageInfo","zoomIn","zoomOut","zoomVal","tEdit","tAdd","tErase",
+   "save","doFind","doRepl","ocrPage","ocrAll"].forEach(k=>$("#"+k).disabled=false);
+
+  const blank=S.pages.filter(p=>!p.hasText).length;
+  log(`${S.n} page${S.n>1?"s":""} · ${S.pages.reduce((a,p)=>a+p.lines.length,0)} editable lines`);
+  if(blank) log(`${blank} page(s) have no text layer — likely scans. Run OCR to edit them.`);
+
+  await renderAll(); S.cur=1; syncPageInfo(); stat("ready");
+}
+
+/* ── group runs into visual lines ────────────────────────── */
+function groupLines(runs, pageNum){
+  const sorted=[...runs].sort((a,b)=> (b.y-a.y) || (a.x-b.x));
+  const rows=[];
+  for(const r of sorted){
+    const row = rows.find(g =>
+      Math.abs(g.y - r.y) <= Math.max(g.size, r.size)*0.34
+    );
+    if(row){ row.parts.push(r); row.size=Math.max(row.size,r.size); }
+    else rows.push({y:r.y, size:r.size, parts:[r]});
+  }
+
+  const lines=[];
+  rows.forEach((row,ri)=>{
+    row.parts.sort((a,b)=>a.x-b.x);
+    // split a row wherever the horizontal gap is big (columns, tables)
+    let chunk=[row.parts[0]];
+    const flush=()=>{
+      const first=chunk[0];
+      const last =chunk[chunk.length-1];
+      let str="";
+      chunk.forEach((r,i)=>{
+        if(i>0){
+          const prev=chunk[i-1];
+          const gap=r.x-(prev.x+prev.w);
+          if(gap > prev.size*0.16 && !/\s$/.test(str) && !/^\s/.test(r.str)) str+=" ";
+        }
+        str+=r.str;
+      });
+      const size=Math.max(...chunk.map(c=>c.size));
+      lines.push({
+        id:`p${pageNum}_l${lines.length}`,
+        str, orig:str,
+        x:first.x, y:row.y,
+        w:(last.x+last.w)-first.x,
+        size, font:first.font,
+        skew: chunk.some(c=>c.skew),
+        bg:null
+      });
+      chunk=[];
+    };
+    for(let i=1;i<row.parts.length;i++){
+      const prev=row.parts[i-1], r=row.parts[i];
+      if(r.x - (prev.x+prev.w) > prev.size*4){ flush(); }
+      chunk.push(r);
+    }
+    flush();
+  });
+  return lines.sort((a,b)=> (b.y-a.y)||(a.x-b.x));
+}
+
+/* ── geometry helpers (PDF units) ────────────────────────── */
+const ASC = 0.86, BOXH = 1.16, PADX = 0.10;
+const boxTop = (p,l) => (p.H - l.y - l.size*ASC);
+const boxH   = l => l.size*BOXH;
+
+/* ── render ──────────────────────────────────────────────── */
+async function renderAll(){
+  stage.innerHTML="";
+  for(const p of S.pages) await renderPage(p);
+  observePages();
+}
+
+async function renderPage(p){
+  const vp=p.pdfPage.getViewport({scale:S.scale});
+  const wrap=document.createElement("div");
+  wrap.className="page"; wrap.dataset.page=p.num;
+  wrap.style.width=vp.width+"px"; wrap.style.height=vp.height+"px";
+
+  const tag=document.createElement("div");
+  tag.className="pnum"; tag.textContent=`PAGE ${String(p.num).padStart(2,"0")}`;
+  wrap.appendChild(tag);
+
+  const canvas=document.createElement("canvas");
+  const dpr=Math.min(window.devicePixelRatio||1,2);
+  canvas.width=Math.floor(vp.width*dpr); canvas.height=Math.floor(vp.height*dpr);
+  canvas.style.width=vp.width+"px"; canvas.style.height=vp.height+"px";
+  const ctx=canvas.getContext("2d",{willReadFrequently:true});
+  ctx.scale(dpr,dpr);
+  wrap.appendChild(canvas);
+  await p.pdfPage.render({canvasContext:ctx,viewport:vp}).promise;
+  p.canvas=canvas; p.dpr=dpr;
+
+  const layer=document.createElement("div");
+  layer.className="layer"; wrap.appendChild(layer);
+  p.layer=layer; p.el=wrap;
+
+  if(p.ocr){
+    const f=document.createElement("div");
+    f.className="ocrflag"; f.textContent="OCR LAYER";
+    wrap.appendChild(f);
+  }
+
+  sampleBackgrounds(p);
+  drawLayer(p);
+  stage.appendChild(wrap);
+  layer.addEventListener("mousedown", ev=>onLayerDown(ev,p));
+}
+
+/* read the dominant colour inside each line box = its background */
+function sampleBackgrounds(p){
+  if(!p.canvas) return;
+  const ctx=p.canvas.getContext("2d",{willReadFrequently:true});
+  const k=S.scale, d=p.dpr;
+  for(const l of p.lines){
+    if(l.bg) continue;
+    const px=Math.max(0,Math.floor(l.x*k*d));
+    const py=Math.max(0,Math.floor(boxTop(p,l)*k*d));
+    const pw=Math.min(p.canvas.width-px, Math.ceil(Math.max(l.w,1)*k*d));
+    const ph=Math.min(p.canvas.height-py, Math.ceil(boxH(l)*k*d));
+    if(pw<=0||ph<=0){ l.bg="#ffffff"; continue; }
+    let img;
+    try{ img=ctx.getImageData(px,py,pw,ph); }catch{ l.bg="#ffffff"; continue; }
+    const tally={};
+    const step=Math.max(1, Math.floor((pw*ph)/4000));
+    for(let i=0;i<pw*ph;i+=step){
+      const o=i*4;
+      // quantise to 8 levels per channel so anti-aliasing collapses into the base tone
+      const key=((img.data[o]>>5)<<10)|((img.data[o+1]>>5)<<5)|(img.data[o+2]>>5);
+      tally[key]=(tally[key]||0)+1;
+    }
+    let best=-1,bk=null;
+    for(const key in tally){ if(tally[key]>best){best=tally[key]; bk=+key;} }
+    const r=((bk>>10)&31)*8+4, g=((bk>>5)&31)*8+4, b=(bk&31)*8+4;
+    l.bg="#"+[r,g,b].map(v=>Math.min(255,v).toString(16).padStart(2,"0")).join("");
+  }
+}
+
+function lineBg(l){ return S.autoBg ? (l.bg||"#ffffff") : S.eraseColor; }
+
+function drawLayer(p){
+  const L=p.layer, k=S.scale;
+  L.innerHTML="";
+
+  p.masks.forEach((m,i)=>{
+    const d=document.createElement("div");
+    d.className="mask";
+    d.style.cssText=`left:${m.x*k}px;top:${(p.H-m.y-m.h)*k}px;width:${m.w*k}px;height:${m.h*k}px;background:${m.color}`;
+    d.title="Double-click to undo this erase";
+    d.addEventListener("dblclick",e=>{e.stopPropagation(); snapshot(); p.masks.splice(i,1); drawLayer(p);});
+    L.appendChild(d);
+  });
+
+  p.lines.forEach(l=>{
+    const el=document.createElement("div");
+    el.className="ln";
+    el.contentEditable="true"; el.spellcheck=false;
+    el.dataset.id=l.id;
+    el.textContent=l.str;
+
+    // KEY: the box always spans the FULL original line, so shortened text
+    // can never reveal the original pixels behind it.
+    el.style.left      = (l.x - l.size*PADX)*k + "px";
+    el.style.top       = boxTop(p,l)*k + "px";
+    el.style.minWidth  = (l.w + l.size*PADX*2)*k + "px";
+    el.style.height    = boxH(l)*k + "px";
+    el.style.fontSize  = (l.size*0.96*k) + "px";
+    el.style.fontFamily= cssFamily(l.font);
+    el.style.paddingLeft = (l.size*PADX*k)+"px";
+
+    const paint = () => {
+      const dirty = l.str !== l.orig;
+      el.classList.toggle("dirty", dirty);
+      el.classList.toggle("sub", dirty && willSubstitute(l.font));
+      const live = dirty || document.activeElement===el;
+      el.classList.toggle("live", live);
+      el.style.background = live ? lineBg(l) : "transparent";
+    };
+    paint();
+
+    el.addEventListener("focus", ()=>{ if(S.tool!=="edit"){ el.blur(); return; } paint(); });
+    el.addEventListener("blur",  paint);
+    el.addEventListener("beforeinput", snapshotDebounced);
+    el.addEventListener("input", ()=>{ l.str=el.textContent.replace(/\n/g,""); paint(); });
+    el.addEventListener("keydown", e=>{
+      if(e.key==="Enter"){ e.preventDefault(); el.blur(); }
+      if(e.key==="Escape"){ el.textContent=l.str; el.blur(); }
+    });
+    L.appendChild(el);
+  });
+
+  p.added.forEach((a,i)=>{
+    const d=document.createElement("div");
+    d.className="newbox"; d.contentEditable="true"; d.spellcheck=false;
+    d.textContent=a.str;
+    d.style.cssText=`left:${a.x*k}px;top:${(p.H-a.y-a.size)*k}px;font-size:${a.size*k}px;font-family:Helvetica,Arial,sans-serif`;
+    d.addEventListener("input",()=>a.str=d.textContent);
+    d.addEventListener("keydown",e=>{
+      if(e.key==="Escape") d.blur();
+      if(e.key==="Backspace" && d.textContent===""){ e.preventDefault(); snapshot(); p.added.splice(i,1); drawLayer(p); }
+    });
+    L.appendChild(d);
+  });
+}
+
+function cssFamily(n){
+  n=(n||"").toLowerCase();
+  if(/courier|mono/.test(n)) return "ui-monospace,Menlo,Consolas,monospace";
+  if(/times|roman|serif|georgia|garamond|minion|book/.test(n)) return "Georgia,'Times New Roman',serif";
+  return "Helvetica,Arial,sans-serif";
+}
+const willSubstitute = n => !/helvetica|arial|times|courier|roman/.test((n||"").toLowerCase());
+
+/* ── tools ───────────────────────────────────────────────── */
+function setTool(t){
+  S.tool=t;
+  $("#tEdit").classList.toggle("on",t==="edit");
+  $("#tAdd").classList.toggle("on",t==="add");
+  $("#tErase").classList.toggle("on",t==="erase");
+  stat(t==="edit"?"click a line to edit it"
+     : t==="add" ?"click where the new text should start"
+     : "drag a box over anything that should disappear");
+}
+$("#tEdit").onclick=()=>setTool("edit");
+$("#tAdd").onclick =()=>setTool("add");
+$("#tErase").onclick=()=>setTool("erase");
+
+function onLayerDown(ev,p){
+  if(S.picking){ pickColor(ev,p); return; }
+  if(S.tool==="edit") return;
+  ev.preventDefault();
+  const r=p.layer.getBoundingClientRect(), k=S.scale;
+  const x0=(ev.clientX-r.left)/k, y0=(ev.clientY-r.top)/k;
+
+  if(S.tool==="add"){
+    snapshot();
+    p.added.push({x:x0, y:p.H-y0-12, size:12, str:"New text"});
+    drawLayer(p);
+    const boxes=p.layer.querySelectorAll(".newbox");
+    const last=boxes[boxes.length-1];
+    last.focus(); document.getSelection().selectAllChildren(last);
+    return;
+  }
+
+  const band=document.createElement("div");
+  band.className="mask"; band.style.background="rgba(31,94,255,.18)";
+  p.layer.appendChild(band);
+  const move=e=>{
+    const x=(e.clientX-r.left)/k, y=(e.clientY-r.top)/k;
+    band.style.left=Math.min(x,x0)*k+"px"; band.style.top=Math.min(y,y0)*k+"px";
+    band.style.width=Math.abs(x-x0)*k+"px"; band.style.height=Math.abs(y-y0)*k+"px";
+  };
+  const up=e=>{
+    document.removeEventListener("mousemove",move);
+    document.removeEventListener("mouseup",up);
+    band.remove();
+    const x=(e.clientX-r.left)/k, y=(e.clientY-r.top)/k;
+    const w=Math.abs(x-x0), h=Math.abs(y-y0);
+    if(w<3||h<3) return;
+    snapshot();
+    let col=S.eraseColor;
+    if(S.autoBg && p.canvas){
+      try{
+        const d=p.canvas.getContext("2d",{willReadFrequently:true})
+          .getImageData(Math.floor(Math.min(x,x0)*S.scale*p.dpr), Math.floor(Math.min(y,y0)*S.scale*p.dpr),1,1).data;
+        col="#"+[d[0],d[1],d[2]].map(v=>v.toString(16).padStart(2,"0")).join("");
+      }catch{}
+    }
+    p.masks.push({x:Math.min(x,x0), y:p.H-Math.max(y,y0), w, h, color:col});
+    drawLayer(p);
+    log(`erased ${w.toFixed(0)}×${h.toFixed(0)} pt on page ${p.num}`);
+  };
+  document.addEventListener("mousemove",move);
+  document.addEventListener("mouseup",up);
+}
+
+$("#pick").onclick=()=>{ S.picking=true; stat("click the page to sample a colour"); };
+function pickColor(ev,p){
+  const r=p.canvas.getBoundingClientRect(), dpr=p.canvas.width/r.width;
+  const d=p.canvas.getContext("2d",{willReadFrequently:true})
+    .getImageData(Math.floor((ev.clientX-r.left)*dpr), Math.floor((ev.clientY-r.top)*dpr),1,1).data;
+  const hex="#"+[d[0],d[1],d[2]].map(v=>v.toString(16).padStart(2,"0")).join("");
+  S.eraseColor=hex; $("#eraseColor").value=hex; $("#autoBg").checked=false; S.autoBg=false;
+  S.picking=false; log("paint-out colour set to "+hex); stat("colour "+hex);
+  S.pages.forEach(pp=>pp.layer&&drawLayer(pp));
+}
+$("#eraseColor").oninput=e=>{ S.eraseColor=e.target.value; S.pages.forEach(p=>p.layer&&drawLayer(p)); };
+$("#autoBg").onchange=e=>{ S.autoBg=e.target.checked; S.pages.forEach(p=>p.layer&&drawLayer(p)); };
+
+/* ── undo ────────────────────────────────────────────────── */
+let snapTimer=null;
+function snapshotDebounced(){ if(snapTimer) return; snapshot(); snapTimer=setTimeout(()=>snapTimer=null,600); }
+function snapshot(){
+  S.history.push(S.pages.map(p=>({
+    strs:p.lines.map(l=>l.str),
+    masks:JSON.parse(JSON.stringify(p.masks)),
+    added:JSON.parse(JSON.stringify(p.added))
+  })));
+  if(S.history.length>60) S.history.shift();
+  $("#undo").disabled=false;
+}
+$("#undo").onclick=()=>{
+  const st=S.history.pop(); if(!st) return;
+  st.forEach((s,i)=>{
+    const p=S.pages[i];
+    p.lines.forEach((l,j)=> l.str=s.strs[j]);
+    p.masks=s.masks; p.added=s.added;
+    if(p.layer) drawLayer(p);
+  });
+  if(!S.history.length) $("#undo").disabled=true;
+  stat("undone");
+};
+
+/* ── nav & zoom ──────────────────────────────────────────── */
+const syncPageInfo=()=>$("#pageInfo").textContent=`${S.cur} / ${S.n}`;
+$("#prev").onclick=()=>goto(S.cur-1);
+$("#next").onclick=()=>goto(S.cur+1);
+function goto(n){ n=Math.max(1,Math.min(S.n,n)); S.cur=n; syncPageInfo();
+  S.pages[n-1].el?.scrollIntoView({behavior:"smooth",block:"start"}); }
+function observePages(){
+  const io=new IntersectionObserver(es=>es.forEach(e=>{
+    if(e.isIntersecting){ S.cur=+e.target.dataset.page; syncPageInfo(); }
+  }),{root:stage,threshold:.5});
+  S.pages.forEach(p=>p.el&&io.observe(p.el));
+}
+$("#zoomIn").onclick =()=>zoom(S.scale*1.2);
+$("#zoomOut").onclick=()=>zoom(S.scale/1.2);
+async function zoom(v){
+  S.scale=Math.max(.4,Math.min(4,v));
+  $("#zoomVal").textContent=Math.round(S.scale/1.35*100)+"%";
+  S.pages.forEach(p=>p.lines.forEach(l=>l.bg=null));   // resample at new raster
+  stat("re-rendering…"); await renderAll(); stat("ready");
+}
+
+/* ── find & replace ──────────────────────────────────────── */
+$("#doFind").onclick=()=>{
+  const q=$("#find").value; if(!q) return;
+  let hits=0, first=null;
+  S.pages.forEach(p=>{
+    p.layer?.querySelectorAll(".ln").forEach(e=>e.classList.remove("hit"));
+    p.lines.forEach(l=>{
+      if(l.str.includes(q)){
+        hits++;
+        const e=p.layer?.querySelector(`[data-id="${l.id}"]`);
+        e?.classList.add("hit");
+        if(!first) first=e;
+      }
+    });
+  });
+  first?.scrollIntoView({behavior:"smooth",block:"center"});
+  log(`"${q}" — ${hits} line${hits===1?"":"s"} matched`);
+  stat(hits?`${hits} matches`:"no matches");
+};
+$("#doRepl").onclick=()=>{
+  const q=$("#find").value, r=$("#repl").value; if(!q) return;
+  snapshot(); let n=0;
+  S.pages.forEach(p=>{
+    let touched=false;
+    p.lines.forEach(l=>{ if(l.str.includes(q)){ l.str=l.str.split(q).join(r); n++; touched=true; } });
+    if(touched&&p.layer) drawLayer(p);
+  });
+  log(`replaced in ${n} line${n===1?"":"s"}`); stat(`${n} replaced`);
+};
+
+/* ── OCR ─────────────────────────────────────────────────── */
+async function ocrPage(p){
+  if(typeof Tesseract==="undefined"){ log("OCR engine did not load — check the network and reload."); return false; }
+  const bar=$("#ocrBar"); bar.style.display="block";
+  const SC=2.2;
+  const vp=p.pdfPage.getViewport({scale:SC});
+  const cv=document.createElement("canvas");
+  cv.width=vp.width; cv.height=vp.height;
+  await p.pdfPage.render({canvasContext:cv.getContext("2d"),viewport:vp}).promise;
+
+  stat(`OCR page ${p.num}…`);
+  const res=await Tesseract.recognize(cv,"eng",{
+    logger:m=>{ if(m.status==="recognizing text") bar.querySelector("i").style.width=(m.progress*100)+"%"; }
+  });
+  bar.style.display="none";
+
+  const words=(res.data.words||[]).filter(w=>w.text&&w.text.trim()&&w.confidence>30);
+  const runs=words.map(w=>{
+    const b=w.bbox, h=(b.y1-b.y0)/SC;
+    return { str:w.text, x:b.x0/SC, y:p.H - b.y1/SC + h*0.18,
+             w:(b.x1-b.x0)/SC, size:h*1.02, font:"OCR", skew:false, conf:w.confidence };
+  });
+  p.lines=groupLines(runs,p.num);
+  p.ocr=true; p.hasText=true;
+  const low=words.filter(w=>w.confidence<75).length;
+  log(`page ${p.num}: OCR read ${words.length} words into ${p.lines.length} lines`+(low?`, ${low} below 75% confidence`:""));
+  return true;
+}
+$("#ocrPage").onclick=async()=>{
+  const p=S.pages[S.cur-1];
+  if(p.hasText && !p.ocr && p.lines.length>2 &&
+     !confirm(`Page ${p.num} already has real text. OCR would replace it with guesses. Continue?`)) return;
+  snapshot();
+  if(await ocrPage(p)){ await renderAll(); }
+  stat("ready");
+};
+$("#ocrAll").onclick=async()=>{
+  const todo=S.pages.filter(p=>!p.hasText||p.lines.length<=2);
+  if(!todo.length){ log("every page already has selectable text — OCR skipped"); return; }
+  snapshot();
+  for(const p of todo) await ocrPage(p);
+  await renderAll(); stat("ready");
+};
+
+/* ── export ──────────────────────────────────────────────── */
+const { PDFDocument, StandardFonts, rgb } = PDFLIB;
+const hexRgb = h => { const n=parseInt(h.slice(1),16);
+  return rgb(((n>>16)&255)/255, ((n>>8)&255)/255, (n&255)/255); };
+
+async function pickFont(doc,cache,name){
+  const n=(name||"").toLowerCase();
+  const bold=/bold|black|heavy|semib/.test(n), ital=/italic|oblique/.test(n);
+  let key;
+  if(/courier|mono/.test(n))
+    key = bold&&ital?"CourierBoldOblique":bold?"CourierBold":ital?"CourierOblique":"Courier";
+  else if(/times|roman|serif|georgia|garamond|minion|book/.test(n))
+    key = bold&&ital?"TimesRomanBoldItalic":bold?"TimesRomanBold":ital?"TimesRomanItalic":"TimesRoman";
+  else
+    key = bold&&ital?"HelveticaBoldOblique":bold?"HelveticaBold":ital?"HelveticaOblique":"Helvetica";
+  if(!cache[key]) cache[key]=await doc.embedFont(StandardFonts[key]);
+  return cache[key];
+}
+// WinAnsi-safe: standard fonts reject smart quotes, dashes, etc.
+const sanitize = s => s
+  .replace(/[\u2018\u2019\u201B]/g,"'").replace(/[\u201C\u201D]/g,'"')
+  .replace(/[\u2013\u2014]/g,"-").replace(/\u2026/g,"...")
+  .replace(/\u00A0/g," ").replace(/[^\x20-\xFF]/g,"?");
+
+$("#save").onclick=async()=>{
+  stat("building PDF…");
+  try{
+    const out=await PDFDocument.load(S.bytes);
+    const pages=out.getPages();
+    const cache={};
+    let edits=0, shrunk=0, skew=0;
+
+    for(let i=0;i<S.pages.length;i++){
+      const p=S.pages[i], pg=pages[i];
+
+      for(const m of p.masks)
+        pg.drawRectangle({x:m.x,y:m.y,width:m.w,height:m.h,color:hexRgb(m.color||"#ffffff")});
+
+      for(const l of p.lines){
+        if(l.str===l.orig) continue;
+        if(l.skew) skew++;
+
+        const font=await pickFont(out,cache,l.font);
+        const padX=l.size*PADX;
+
+        // paint out the ENTIRE original line, then redraw it
+        pg.drawRectangle({
+          x: l.x - padX,
+          y: l.y - l.size*(BOXH-ASC),
+          width: l.w + padX*2,
+          height: l.size*BOXH,
+          color: hexRgb(lineBg(l))
+        });
+
+        const txt=sanitize(l.str);
+        if(txt.trim()){
+          let size=l.size;
+          const avail=l.w+padX;
+          const need=font.widthOfTextAtSize(txt,size);
+          if(avail>0 && need>avail*1.002){ size=size*(avail/need); shrunk++; }
+          pg.drawText(txt,{x:l.x, y:l.y, size, font, color:rgb(0,0,0)});
+        }
+        edits++;
+      }
+
+      for(const a of p.added){
+        if(!a.str.trim()) continue;
+        const font=await pickFont(out,cache,"Helvetica");
+        pg.drawText(sanitize(a.str),{x:a.x,y:a.y,size:a.size,font,color:rgb(0,0,0)});
+        edits++;
+      }
+    }
+
+    const bytes=await out.save();
+    const url=URL.createObjectURL(new Blob([bytes],{type:"application/pdf"}));
+    const a=document.createElement("a"); a.href=url; a.download="edited.pdf"; a.click();
+    setTimeout(()=>URL.revokeObjectURL(url),4000);
+
+    log(`saved · ${edits} line${edits===1?"":"s"} rewritten`
+      + (shrunk?` · ${shrunk} auto-fitted to the original width`:"")
+      + (skew?` · ${skew} rotated line(s) drawn upright`:""));
+    stat("downloaded");
+  }catch(err){
+    log("export failed: "+err.message); stat("export failed");
+  }
+};
+
+/* ── misc ────────────────────────────────────────────────── */
+addEventListener("keydown",e=>{
+  if((e.ctrlKey||e.metaKey)&&e.key==="z"){ e.preventDefault(); $("#undo").click(); }
+  if((e.ctrlKey||e.metaKey)&&e.key==="s"){ e.preventDefault(); if(!$("#save").disabled) $("#save").click(); }
+});
+if(innerWidth<820){
+  $("#panelToggle").style.display="";
+  $("#panelToggle").onclick=()=>$("#panel").classList.toggle("open");
+}
+</script>
