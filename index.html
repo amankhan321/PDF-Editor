@@ -105,6 +105,26 @@
     #stage{padding:18px 8px 70px}
   }
   @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+
+  /* floating text toolbar, appears above the line being edited */
+  #bar{
+    position:fixed;z-index:60;display:none;gap:6px;align-items:center;
+    background:#101216;border:1px solid #3c4049;border-radius:5px;
+    padding:6px 7px;box-shadow:0 10px 28px rgba(0,0,0,.55);
+  }
+  #bar.show{display:flex}
+  #bar select,#bar input[type=number]{
+    font-family:var(--mono);font-size:11.5px;background:#1d2026;color:#e8e6e0;
+    border:1px solid #3c4049;border-radius:3px;padding:5px 6px;
+  }
+  #bar input[type=number]{width:56px}
+  #bar input[type=color]{
+    width:28px;height:27px;padding:2px;background:#1d2026;
+    border:1px solid #3c4049;border-radius:3px;cursor:pointer;
+  }
+  #bar button{padding:5px 9px}
+  #bar .div{width:1px;height:20px;background:#3c4049;margin:0 1px}
+  #bar .lbl{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;color:#6f7581;text-transform:uppercase}
 </style>
 
 <header>
@@ -131,6 +151,23 @@
   <button id="panelToggle" style="display:none">Panel</button>
   <button id="save" class="go" disabled>Download edited PDF</button>
 </header>
+
+<div id="bar">
+  <span class="lbl">Font</span>
+  <select id="bFam">
+    <option value="">Auto (detected)</option>
+    <option value="helvetica">Helvetica / Arial</option>
+    <option value="times">Times / serif</option>
+    <option value="courier">Courier / mono</option>
+  </select>
+  <input type="number" id="bSize" min="4" max="96" step="0.5" title="Size in points">
+  <div class="div"></div>
+  <button id="bBold" title="Bold" style="font-weight:700">B</button>
+  <button id="bItal" title="Italic" style="font-style:italic">I</button>
+  <div class="div"></div>
+  <input type="color" id="bColor" title="Text colour">
+  <button id="bReset" title="Drop overrides, go back to what was detected">Reset</button>
+</div>
 
 <main>
   <div id="stage">
@@ -356,36 +393,61 @@ async function renderPage(p){
   layer.addEventListener("mousedown", ev=>onLayerDown(ev,p));
 }
 
-/* read the dominant colour inside each line box = its background */
+/* Read each line's real background AND text colour from the rendered page.
+   Exact 8-bit mode: background is the most common pixel, text colour is the
+   most common pixel that sits far away from it. */
 function sampleBackgrounds(p){
   if(!p.canvas) return;
   const ctx=p.canvas.getContext("2d",{willReadFrequently:true});
   const k=S.scale, d=p.dpr;
+  const hex=n=>"#"+[(n>>16)&255,(n>>8)&255,n&255].map(v=>v.toString(16).padStart(2,"0")).join("");
   for(const l of p.lines){
     if(l.bg) continue;
     const px=Math.max(0,Math.floor(l.x*k*d));
     const py=Math.max(0,Math.floor(boxTop(p,l)*k*d));
-    const pw=Math.min(p.canvas.width-px, Math.ceil(Math.max(l.w,1)*k*d));
+    const pw=Math.min(p.canvas.width-px,  Math.ceil(Math.max(l.w,1)*k*d));
     const ph=Math.min(p.canvas.height-py, Math.ceil(boxH(l)*k*d));
-    if(pw<=0||ph<=0){ l.bg="#ffffff"; continue; }
-    let img;
-    try{ img=ctx.getImageData(px,py,pw,ph); }catch{ l.bg="#ffffff"; continue; }
-    const tally={};
-    const step=Math.max(1, Math.floor((pw*ph)/4000));
-    for(let i=0;i<pw*ph;i+=step){
+    if(pw<=1||ph<=1){ l.bg="#ffffff"; l.fg="#000000"; continue; }
+    let img; try{ img=ctx.getImageData(px,py,pw,ph); }
+    catch{ l.bg="#ffffff"; l.fg="#000000"; continue; }
+
+    const data=img.data, N=pw*ph, step=Math.max(1,Math.floor(N/6000));
+    const tally=new Map();
+    for(let i=0;i<N;i+=step){
       const o=i*4;
-      // quantise to 8 levels per channel so anti-aliasing collapses into the base tone
-      const key=((img.data[o]>>5)<<10)|((img.data[o+1]>>5)<<5)|(img.data[o+2]>>5);
-      tally[key]=(tally[key]||0)+1;
+      if(data[o+3]<8) continue;
+      const key=(data[o]<<16)|(data[o+1]<<8)|data[o+2];
+      tally.set(key,(tally.get(key)||0)+1);
     }
-    let best=-1,bk=null;
-    for(const key in tally){ if(tally[key]>best){best=tally[key]; bk=+key;} }
-    const r=((bk>>10)&31)*8+4, g=((bk>>5)&31)*8+4, b=(bk&31)*8+4;
-    l.bg="#"+[r,g,b].map(v=>Math.min(255,v).toString(16).padStart(2,"0")).join("");
+    if(!tally.size){ l.bg="#ffffff"; l.fg="#000000"; continue; }
+
+    let bg=0,bn=-1;
+    for(const [key,v] of tally) if(v>bn){ bn=v; bg=key; }
+    const br=(bg>>16)&255, bgn=(bg>>8)&255, bb=bg&255;
+
+    let fg=null,fn=0;
+    for(const [key,v] of tally){
+      const r=(key>>16)&255, g=(key>>8)&255, b=key&255;
+      if(Math.abs(r-br)+Math.abs(g-bgn)+Math.abs(b-bb) > 120 && v>fn){ fn=v; fg=key; }
+    }
+    l.bg=hex(bg);
+    l.fg=fg!==null?hex(fg):"#000000";
   }
 }
 
 function lineBg(l){ return S.autoBg ? (l.bg||"#ffffff") : S.eraseColor; }
+function lineFg(l){ return (l.ov&&l.ov.color) || l.fg || "#000000"; }
+function lineSize(l){ return (l.ov&&l.ov.size) || l.size; }
+function lineFontName(l){
+  const o=l.ov||{};
+  const fam = o.fam || l.font || "";
+  return fam + (o.bold?" bold":"") + (o.ital?" italic":"");
+}
+function isDirty(l){
+  if(l.str!==l.orig) return true;
+  const o=l.ov; if(!o) return false;
+  return !!(o.fam||o.size||o.bold||o.ital||o.color);
+}
 
 function drawLayer(p){
   const L=p.layer, k=S.scale;
@@ -407,28 +469,36 @@ function drawLayer(p){
     el.dataset.id=l.id;
     el.textContent=l.str;
 
-    // KEY: the box always spans the FULL original line, so shortened text
-    // can never reveal the original pixels behind it.
+    // The box always spans the FULL original line, so shortened text can
+    // never reveal the original pixels behind it.
     el.style.left      = (l.x - l.size*PADX)*k + "px";
     el.style.top       = boxTop(p,l)*k + "px";
     el.style.minWidth  = (l.w + l.size*PADX*2)*k + "px";
     el.style.height    = boxH(l)*k + "px";
-    el.style.fontSize  = (l.size*0.96*k) + "px";
-    el.style.fontFamily= cssFamily(l.font);
     el.style.paddingLeft = (l.size*PADX*k)+"px";
 
     const paint = () => {
-      const dirty = l.str !== l.orig;
-      el.classList.toggle("dirty", dirty);
-      el.classList.toggle("sub", dirty && willSubstitute(l.font));
-      const live = dirty || document.activeElement===el;
-      el.classList.toggle("live", live);
+      const dirty = isDirty(l);
+      const live  = dirty || document.activeElement===el;
+      const o = l.ov||{};
+      el.style.fontSize   = (lineSize(l)*0.96*k)+"px";
+      el.style.fontFamily = cssFamily(o.fam || l.font);
+      el.style.fontWeight = o.bold ? "700" : "400";
+      el.style.fontStyle  = o.ital ? "italic" : "normal";
       el.style.background = live ? lineBg(l) : "transparent";
+      el.style.color      = live ? lineFg(l) : "transparent";
+      el.classList.toggle("dirty", dirty);
+      el.classList.toggle("sub", dirty && willSubstitute(lineFontName(l)));
+      el.classList.toggle("live", live);
     };
+    l._paint = paint;
     paint();
 
-    el.addEventListener("focus", ()=>{ if(S.tool!=="edit"){ el.blur(); return; } paint(); });
-    el.addEventListener("blur",  paint);
+    el.addEventListener("focus", ()=>{
+      if(S.tool!=="edit"){ el.blur(); return; }
+      S.sel={line:l, page:p, el}; showBar(); paint();
+    });
+    el.addEventListener("blur", ()=>{ paint(); setTimeout(maybeHideBar,120); });
     el.addEventListener("beforeinput", snapshotDebounced);
     el.addEventListener("input", ()=>{ l.str=el.textContent.replace(/\n/g,""); paint(); });
     el.addEventListener("keydown", e=>{
@@ -459,6 +529,49 @@ function cssFamily(n){
   return "Helvetica,Arial,sans-serif";
 }
 const willSubstitute = n => !/helvetica|arial|times|courier|roman/.test((n||"").toLowerCase());
+
+/* ── floating text toolbar ───────────────────────────────── */
+S.sel=null;
+const bar=$("#bar");
+bar.addEventListener("mousedown", e=>{ if(e.target.tagName!=="SELECT") e.preventDefault(); });
+
+function showBar(){
+  const {line:l, el}=S.sel;
+  const o=l.ov||{};
+  $("#bFam").value  = o.fam||"";
+  $("#bSize").value = (+lineSize(l)).toFixed(1).replace(/\.0$/,"");
+  $("#bColor").value= lineFg(l);
+  $("#bBold").classList.toggle("on", !!o.bold);
+  $("#bItal").classList.toggle("on", !!o.ital);
+  bar.classList.add("show");
+  const r=el.getBoundingClientRect();
+  const bw=bar.offsetWidth||420, bh=bar.offsetHeight||40;
+  let left=Math.min(Math.max(8, r.left), innerWidth-bw-8);
+  let top=r.top-bh-8;
+  if(top<8) top=r.bottom+8;
+  bar.style.left=left+"px"; bar.style.top=top+"px";
+}
+function maybeHideBar(){
+  if(document.activeElement && document.activeElement.closest &&
+     (document.activeElement.closest("#bar")||document.activeElement.classList.contains("ln"))) return;
+  bar.classList.remove("show"); S.sel=null;
+}
+function applyOv(patch){
+  if(!S.sel) return;
+  const l=S.sel.line;
+  snapshotDebounced();
+  l.ov = Object.assign({}, l.ov, patch);
+  l._paint && l._paint();
+  showBar();
+}
+$("#bFam").onchange  = e=>applyOv({fam:e.target.value||null});
+$("#bSize").oninput  = e=>applyOv({size:parseFloat(e.target.value)||null});
+$("#bColor").oninput = e=>applyOv({color:e.target.value});
+$("#bBold").onclick  = ()=>applyOv({bold:!(S.sel.line.ov&&S.sel.line.ov.bold)});
+$("#bItal").onclick  = ()=>applyOv({ital:!(S.sel.line.ov&&S.sel.line.ov.ital)});
+$("#bReset").onclick = ()=>{ if(!S.sel) return; snapshot(); S.sel.line.ov=null;
+                             S.sel.line._paint&&S.sel.line._paint(); showBar(); };
+addEventListener("scroll", ()=>{ if(S.sel) showBar(); }, true);
 
 /* ── tools ───────────────────────────────────────────────── */
 function setTool(t){
@@ -542,6 +655,7 @@ function snapshotDebounced(){ if(snapTimer) return; snapshot(); snapTimer=setTim
 function snapshot(){
   S.history.push(S.pages.map(p=>({
     strs:p.lines.map(l=>l.str),
+    ovs:p.lines.map(l=>l.ov?JSON.parse(JSON.stringify(l.ov)):null),
     masks:JSON.parse(JSON.stringify(p.masks)),
     added:JSON.parse(JSON.stringify(p.added))
   })));
@@ -552,7 +666,7 @@ $("#undo").onclick=()=>{
   const st=S.history.pop(); if(!st) return;
   st.forEach((s,i)=>{
     const p=S.pages[i];
-    p.lines.forEach((l,j)=> l.str=s.strs[j]);
+    p.lines.forEach((l,j)=>{ l.str=s.strs[j]; l.ov=s.ovs?s.ovs[j]:null; });
     p.masks=s.masks; p.added=s.added;
     if(p.layer) drawLayer(p);
   });
@@ -694,10 +808,10 @@ $("#save").onclick=async()=>{
         pg.drawRectangle({x:m.x,y:m.y,width:m.w,height:m.h,color:hexRgb(m.color||"#ffffff")});
 
       for(const l of p.lines){
-        if(l.str===l.orig) continue;
+        if(!isDirty(l)) continue;
         if(l.skew) skew++;
 
-        const font=await pickFont(out,cache,l.font);
+        const font=await pickFont(out,cache,lineFontName(l));
         const padX=l.size*PADX;
 
         // paint out the ENTIRE original line, then redraw it
@@ -711,11 +825,11 @@ $("#save").onclick=async()=>{
 
         const txt=sanitize(l.str);
         if(txt.trim()){
-          let size=l.size;
+          let size=lineSize(l);
           const avail=l.w+padX;
           const need=font.widthOfTextAtSize(txt,size);
           if(avail>0 && need>avail*1.002){ size=size*(avail/need); shrunk++; }
-          pg.drawText(txt,{x:l.x, y:l.y, size, font, color:rgb(0,0,0)});
+          pg.drawText(txt,{x:l.x, y:l.y, size, font, color:hexRgb(lineFg(l))});
         }
         edits++;
       }
