@@ -6,6 +6,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/4.1.4/tesseract.min.js"></script>
+<script src="https://unpkg.com/@pdf-lib/fontkit@1.1.1/dist/fontkit.umd.min.js"></script>
 
 <style>
 :root{
@@ -570,7 +571,9 @@ const S = {
   ann:{color:"#ffe066"},
   shape:{kind:"rect", stroke:"#1967d2", fill:"none", w:2},
   sigs:[], formMode:false,
-  fontWarn:new Set()
+  fontWarn:new Set(),
+  fontFiles:new Map(),   // pdf.js loadedName -> font program bytes
+  fkCache:new Map()      // loadedName -> parsed fontkit font (glyph coverage)
 };
 
 /* ── little helpers ─────────────────────────────────────── */
@@ -643,6 +646,7 @@ async function openPdf(file){
   catch(err){ toast("That file could not be opened: "+err.message, 5000); return; }
 
   S.n=S.doc.numPages; S.pages=[]; S.undoStack=[]; S.redoStack=[];
+  S.fontFiles.clear(); S.fkCache.clear();
   for(let i=1;i<=S.n;i++){
     const pg=await S.doc.getPage(i);
     const vp=pg.getViewport({scale:1});
@@ -817,6 +821,7 @@ async function buildPage(p){
   inner.appendChild(canvas);
   await p.pdfPage.render({canvasContext:ctx, viewport:vp}).promise;
 
+  harvestFonts(p);
   p.canvas=canvas; p.dpr=dpr; p.el=pg; p.inner=inner;
   ["paint","reflow","items","hit"].forEach(cls=>{
     const d=document.createElement("div"); d.className="lay "+cls; inner.appendChild(d);
@@ -833,6 +838,52 @@ async function buildPage(p){
   bindPageInput(p);
   $("#reel").appendChild(pg);
 }
+
+/* pdf.js sanitises every embedded font into a usable OpenType/TrueType file and
+   parks it in commonObjs once the page has rendered. Grab it: that file is the
+   only way an edit can come back in the document's real typeface. */
+function harvestFonts(p){
+  const names=new Set(p.lines.map(l=>l.font).filter(Boolean));
+  for(const name of names){
+    if(S.fontFiles.has(name)) continue;
+    try{
+      if(!p.pdfPage.commonObjs.has(name)) continue;
+      const o=p.pdfPage.commonObjs.get(name);
+      let d=o && (o.data || o._data);
+      if(!d && typeof o?.src==="string" && o.src.startsWith("data:")){
+        const b=atob(o.src.split(",")[1]);
+        d=Uint8Array.from(b, c=>c.charCodeAt(0));
+      }
+      if(d && d.length>4) S.fontFiles.set(name, d instanceof Uint8Array ? d : new Uint8Array(d));
+    }catch{}
+  }
+}
+
+/* does this font actually contain every character being typed? */
+function coversText(name, txt){
+  if(!S.fontFiles.has(name) || typeof fontkit==="undefined") return false;
+  let fk=S.fkCache.get(name);
+  if(fk===undefined){
+    try{ fk=fontkit.create(S.fontFiles.get(name)); }catch{ fk=null; }
+    S.fkCache.set(name, fk);
+  }
+  if(!fk || !fk.hasGlyphForCodePoint) return false;
+  for(const ch of txt){
+    const cp=ch.codePointAt(0);
+    if(cp===32) continue;
+    try{ if(!fk.hasGlyphForCodePoint(cp)) return false; }catch{ return false; }
+  }
+  return true;
+}
+
+/* CSS family for the on-screen preview: pdf.js already registered a @font-face
+   under the loadedName, so the editor shows the true typeface. */
+function previewFamily(l){
+  const fallback=CSS_FAM[famOf(l.font)];
+  if(l.ov && l.ov.fam) return CSS_FAM[l.ov.fam];
+  return l.font ? `"${l.font}",${fallback}` : fallback;
+}
+const usesEmbedded = l => !(l.ov && l.ov.fam) && S.fontFiles.has(l.font);
 
 function addOcrHint(p){
   const h=document.createElement("div");
@@ -864,10 +915,12 @@ function paintPage(p){
       const t=document.createElement("div");
       t.className="reflowtext";
       t.textContent=l.str;
+      const emb=usesEmbedded(l);
       t.style.cssText=
         `left:${l.x*k}px;top:${(l.top+l.h*0.5)*k}px;transform:translateY(-50%);`+
-        `font-family:${CSS_FAM[st.fam]};font-size:${st.size*k}px;color:${st.color};`+
-        `font-weight:${st.bold?700:400};font-style:${st.ital?"italic":"normal"}`;
+        `font-family:${previewFamily(l)};font-size:${st.size*k}px;color:${st.color};`+
+        `font-weight:${emb&&!(l.ov&&l.ov.bold)?400:(st.bold?700:400)};`+
+        `font-style:${emb&&!(l.ov&&l.ov.ital)?"normal":(st.ital?"italic":"normal")}`;
       p.Lreflow.appendChild(t);
     }
   }
@@ -930,11 +983,13 @@ function editLine(p,l,ev){
   ed.className="inplace";
   ed.contentEditable="true"; ed.spellcheck=false;
   ed.textContent=l.str;
+  const embE=usesEmbedded(l);
   ed.style.cssText=
     `left:${l.x*k}px;top:${l.top*k}px;min-width:${l.w*k}px;height:${l.h*k}px;`+
     `display:flex;align-items:center;`+
-    `font-family:${CSS_FAM[st.fam]};font-size:${st.size*k}px;color:${st.color};`+
-    `font-weight:${st.bold?700:400};font-style:${st.ital?"italic":"normal"}`;
+    `font-family:${previewFamily(l)};font-size:${st.size*k}px;color:${st.color};`+
+    `font-weight:${embE&&!(l.ov&&l.ov.bold)?400:(st.bold?700:400)};`+
+    `font-style:${embE&&!(l.ov&&l.ov.ital)?"normal":(st.ital?"italic":"normal")}`;
   p.inner.appendChild(ed);
 
   markBefore();
@@ -944,7 +999,7 @@ function editLine(p,l,ev){
   showFmtFor(ed, {
     get:()=>lineStyle(l),
     set:patch=>{ l.ov=Object.assign({},l.ov,patch); const s2=lineStyle(l);
-      ed.style.fontFamily=CSS_FAM[s2.fam]; ed.style.fontSize=(s2.size*S.zoom)+"px";
+      ed.style.fontFamily=previewFamily(l); ed.style.fontSize=(s2.size*S.zoom)+"px";
       ed.style.color=s2.color; ed.style.fontWeight=s2.bold?700:400;
       ed.style.fontStyle=s2.ital?"italic":"normal"; },
     del:()=>{ ed.textContent=""; commitEdit(); }
@@ -1799,11 +1854,38 @@ function wrap(text, font, size, maxW){
   return out;
 }
 
+/* Prefer the document's own font file. pdf.js hands us a sanitised copy;
+   fontkit lets pdf-lib embed it, so an edit comes back in the real typeface
+   at the real weight. Substitution is now the exception, not the rule. */
+async function fontFor(out, cache, l, st, getStd){
+  if(usesEmbedded(l)){
+    const key="emb:"+l.font;
+    if(cache[key]) return {font:cache[key], embedded:true};
+    if(!coversText(l.font, l.str)){
+      return {font:await getStd(FONT_KEY(st.fam,st.bold,st.ital)), embedded:false,
+              why:"the embedded font is a subset without the new characters"};
+    }
+    try{
+      if(!out.__fkReady){
+        if(typeof fontkit==="undefined") throw new Error("fontkit unavailable");
+        out.registerFontkit(fontkit); out.__fkReady=true;
+      }
+      cache[key]=await out.embedFont(S.fontFiles.get(l.font), {subset:false});
+      return {font:cache[key], embedded:true};
+    }catch(err){
+      console.warn("could not re-embed", l.font, err);
+      return {font:await getStd(FONT_KEY(st.fam,st.bold,st.ital)), embedded:false,
+              why:"the embedded font could not be re-used"};
+    }
+  }
+  return {font:await getStd(FONT_KEY(st.fam,st.bold,st.ital)), embedded:false};
+}
+
 $("#apply").onclick=async()=>{
   commitEdit(); deselect();
   const btn=$("#apply");
   btn.disabled=true; btn.lastChild.textContent=" Working…";
-  const report={lines:0, items:0, fitted:0, fields:0, links:0, subs:new Set()};
+  const report={lines:0, items:0, fitted:0, fields:0, links:0, exact:0, subs:new Set()};
 
   try{
     const out=await PDFDocument.load(S.bytes, {ignoreEncryption:true});
@@ -1821,8 +1903,11 @@ $("#apply").onclick=async()=>{
       for(const l of P.lines){
         if(!lineChanged(l)) continue;
         const st=lineStyle(l);
-        const font=await getFont(FONT_KEY(st.fam, st.bold, st.ital));
-        if(!/helvetica|arial|times|courier|roman/i.test(l.font||"")) report.subs.add(l.font||"embedded font");
+        const picked=await fontFor(out, fonts, l, st, getFont);
+        const font=picked.font;
+        if(!picked.embedded && !/helvetica|arial|times|courier|roman/i.test(l.font||""))
+          report.subs.add(picked.why||"a font that is not embedded in full");
+        if(picked.embedded) report.exact++;
         const padX=l.size*0.1;
 
         pg.drawRectangle({
@@ -1830,7 +1915,7 @@ $("#apply").onclick=async()=>{
           color:toRgb(l.bg||"#ffffff")
         });
 
-        const txt=clean(l.str);
+        const txt = picked.embedded ? l.str : clean(l.str);
         if(txt.trim()){
           let size=st.size;
           const avail=l.w+padX;
@@ -1996,7 +2081,8 @@ $("#apply").onclick=async()=>{
     if(report.links) bits.push(`${report.links} link${report.links===1?"":"s"}`);
     let msg = bits.length ? "Saved — "+bits.join(", ")+"." : "Saved. Nothing was changed.";
     if(report.fitted) msg += ` ${report.fitted} line${report.fitted===1?"":"s"} were scaled down to fit the original width.`;
-    if(report.subs.size) msg += ` Edited text was redrawn in a substitute font — the original ${[...report.subs][0]} is embedded without a full character set.`;
+    if(report.exact) msg += ` ${report.exact} of them kept the document's own typeface.`;
+    if(report.subs.size) msg += ` Some text fell back to a standard font because ${[...report.subs][0]}.`;
     toast(msg, 8000);
 
   }catch(err){
