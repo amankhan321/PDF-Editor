@@ -123,7 +123,7 @@ svg{display:block;flex:none}
 .ocrhint .x{color:var(--txt-3);padding:4px 6px}
 
 /* stacked overlays over each page canvas */
-.lay{position:absolute;inset:0}
+.lay{position:absolute;inset:0;pointer-events:none}
 .lay.paint{z-index:2}
 .lay.reflow{z-index:3}
 .lay.hit{z-index:4}
@@ -135,15 +135,15 @@ svg{display:block;flex:none}
 
 /* the in-place editor: no chrome at all, just a caret */
 .inplace{
-  position:absolute;white-space:pre-wrap;line-height:1;outline:none;
+  pointer-events:auto;position:absolute;white-space:pre-wrap;line-height:1;outline:none;
   background:transparent;caret-color:var(--accent);z-index:8;
   box-shadow:0 0 0 1px var(--accent-line);border-radius:2px;
 }
-.hit{position:absolute;cursor:text}
+.hit{position:absolute;cursor:text;pointer-events:auto}
 .hit:hover{background:rgba(25,103,210,.07);border-radius:2px}
 
 /* placed elements */
-.item{position:absolute;transform-origin:center center}
+.item{position:absolute;transform-origin:center center;pointer-events:auto}
 .item.sel{outline:1.5px solid var(--accent);outline-offset:1px}
 .item .body{width:100%;height:100%;pointer-events:none}
 .item.txt .body{
@@ -152,7 +152,7 @@ svg{display:block;flex:none}
 .item img{width:100%;height:100%;object-fit:fill;display:block}
 .item svg{width:100%;height:100%;overflow:visible}
 .hnd{
-  position:absolute;width:10px;height:10px;background:#fff;border:1.5px solid var(--accent);
+  pointer-events:auto;position:absolute;width:10px;height:10px;background:#fff;border:1.5px solid var(--accent);
   border-radius:2px;z-index:3;
 }
 .hnd.rot{border-radius:50%;background:var(--accent);cursor:grab}
@@ -875,8 +875,10 @@ function paintPage(p){
   // 2. placed items
   for(const it of p.items) drawItem(p,it);
 
-  // 3. invisible hit zones over original text
-  for(const l of p.lines){
+  // 3. invisible hit zones over original text — only for the tools that use them,
+  //    otherwise they would intercept clicks meant for placing shapes or whiteout
+  const wantsHits = ["select","text","highlight","underline","strike"].includes(S.tool);
+  for(const l of (wantsHits ? p.lines : [])){
     const z=document.createElement("div");
     z.className="hit";
     z.style.cssText=
@@ -884,15 +886,14 @@ function paintPage(p){
       `width:${(l.w+l.size*0.2)*k}px;height:${l.h*k}px`;
     z.addEventListener("dblclick", e=>{ e.stopPropagation(); editLine(p,l,e); });
     z.addEventListener("click", e=>{
-      if(S.tool==="text"){ e.stopPropagation(); editLine(p,l,e); }
+      if(S.tool==="text"||S.tool==="select"){ e.stopPropagation(); editLine(p,l,e); }
       else if(S.tool==="highlight"||S.tool==="underline"||S.tool==="strike"){
         e.stopPropagation(); markLine(p,l,S.tool);
       }
     });
     p.Lhit.appendChild(z);
   }
-  p.Lhit.style.pointerEvents =
-    (S.tool==="select"||S.tool==="text"||["highlight","underline","strike"].includes(S.tool)) ? "auto":"none";
+  p.Lhit.style.pointerEvents = wantsHits ? "auto" : "none";
 }
 
 function applyRot(p){
@@ -963,6 +964,10 @@ function placeCaret(el, ev){
   const r=document.createRange(), sel=getSelection();
   let pos=null;
   if(ev && document.caretRangeFromPoint) pos=document.caretRangeFromPoint(ev.clientX, ev.clientY);
+  else if(ev && document.caretPositionFromPoint){
+    const cp=document.caretPositionFromPoint(ev.clientX, ev.clientY);
+    if(cp){ pos=document.createRange(); pos.setStart(cp.offsetNode, cp.offset); pos.collapse(true); }
+  }
   if(pos && el.contains(pos.startContainer)){ sel.removeAllRanges(); sel.addRange(pos); return; }
   r.selectNodeContents(el); r.collapse(false);
   sel.removeAllRanges(); sel.addRange(r);
