@@ -1,28 +1,35 @@
-# Proofsheet — PDF text editor with OCR
+# PDF Editor
 
-Edit the text inside a PDF, in the browser. Nothing is uploaded: the file is
-opened, edited and re-saved entirely inside the tab.
+Edit a PDF directly on the page, in the browser. Nothing is uploaded — the file
+is opened, edited and re-saved entirely inside the tab.
 
 **Live:** https://amankhan321.github.io/PDF-Editor/
 
 ## What it does
 
-- **Line-level editing.** Runs from the PDF text layer are regrouped into visual
-  lines, so a sentence is one editable field instead of three fragments.
-- **No ghosting.** An edited line's box always spans the full width of the
-  original line, so deleting text can never expose the old pixels behind it.
-- **Background matching.** The dominant colour inside each line box is sampled
-  from the rendered page and used to paint out the original, so edits on tinted
-  or shaded backgrounds stay invisible.
-- **OCR for scans.** Pages with no text layer can be read with Tesseract and
-  become editable. Low-confidence words are reported in the activity log.
-- **Add text, erase regions, find and replace, undo.**
-- **Untouched text is never re-rendered.** Only edited lines are painted over
-  and redrawn; everything else is copied through from the original file.
+- **Edit existing text in place.** Double-click any text. It stays in position at
+  its own size and colour: the original is covered with the exact background
+  colour sampled from the page, and the replacement is drawn over it. No visible
+  input boxes.
+- **Add anything.** Text boxes, images, stamps, signatures, links, form fields
+  (text, multiline, dropdown, radio, checkbox, signature), shapes, freehand ink,
+  highlights, underlines and strikeouts.
+- **Direct manipulation.** Everything placed can be dragged, resized from any
+  corner and rotated, with alignment guides that snap to other elements and to
+  the page centre.
+- **Whiteout** samples the paper colour, so it disappears into tinted pages.
+- **Page operations.** Delete a page, insert a blank one, rotate, zoom, fit
+  width, thumbnail navigation.
+- **Find and replace** and **OCR for scanned pages** live in a collapsible panel.
+  A scanned page shows a quiet inline prompt instead of a technical sidebar.
+- **Full undo/redo history.**
+
+Untouched content is never re-rendered — it is copied straight through from the
+original file. Only edited lines are painted over and redrawn.
 
 ## How it is built
 
-Single HTML file, no build step, no dependencies to install.
+Single HTML file, no build step, nothing to install.
 
 | Piece | Library |
 |---|---|
@@ -32,21 +39,32 @@ Single HTML file, no build step, no dependencies to install.
 
 ## Known limits
 
-These are inherent to editing PDFs without the original fonts, and the UI
-marks each one rather than hiding it.
+These come from editing a PDF without its original font files. The app reports
+each one in the summary after saving rather than hiding it.
 
-- **Font substitution.** If the PDF embeds a font that is not one of the 14
-  standard PDF fonts, edited lines are redrawn in the closest of
-  Helvetica / Times / Courier. Those lines get an amber underline.
-- **Auto-fit.** Longer replacement text is scaled down to hold the original
-  line width. The save log reports how many lines were fitted.
-- **Rotated text** is redrawn upright and flagged in the log.
-- **Characters** outside WinAnsi are normalised (smart quotes, em dashes,
-  ellipses) or replaced with `?`.
+- **Font substitution.** If the PDF embeds a font outside the 14 standard PDF
+  fonts, edited text is redrawn in the closest of Helvetica / Times / Courier.
+- **Auto-fit.** Longer replacement text is scaled down to hold the original line
+  width; the save summary says how many lines that affected.
+- **Characters** outside WinAnsi are normalised (smart quotes, dashes) or
+  replaced.
+- Scanned pages need OCR before their text can be edited, and every OCR word is
+  a guess.
+
+## Keyboard
+
+| | |
+|---|---|
+| `V` / `T` | Select tool / Text tool |
+| `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / Redo |
+| `Ctrl+F` | Find and replace |
+| `Ctrl+S` | Apply changes and download |
+| `Delete` | Remove the selected element |
+| `Esc` | Finish editing, back to Select |
 
 ## Running it
 
-Open `index.html` in a browser, or serve the folder with any static host.
+Open `index.html`, or serve the folder with any static host.
 
 ## Licence
 
