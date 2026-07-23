@@ -677,6 +677,14 @@ async function openPdf(file){
     `${S.pages.reduce((a,p)=>a+p.lines.length,0)} editable text lines` +
     (S.pages.filter(p=>p.scanned).length ? ` · ${S.pages.filter(p=>p.scanned).length} scanned` : "");
 
+  // say plainly whether the real fonts came back, so a silent fallback is never a mystery
+  setTimeout(()=>{
+    const got=S.fontFiles.size;
+    $("#docInfo").textContent += got
+      ? ` · ${got} original font${got===1?"":"s"} recovered, edits keep the real typeface`
+      : " · no embedded font could be recovered, edits will use a substitute";
+  }, 500);
+
   fitWidth();
   syncHistoryButtons();
   setTool("select");
