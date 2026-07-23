@@ -3,7 +3,7 @@
 Edit the text inside a PDF, in the browser. Nothing is uploaded: the file is
 opened, edited and re-saved entirely inside the tab.
 
-**Live:** _(add the deploy URL here)_
+**Live:** https://amankhan321.github.io/PDF-Editor/
 
 ## What it does
 
