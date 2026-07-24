@@ -573,9 +573,7 @@ const S = {
   sigs:[], formMode:false,
   fontWarn:new Set(),
   fontFiles:new Map(),   // pdf.js loadedName -> font program bytes
-  fkCache:new Map(),     // loadedName -> parsed fontkit font (glyph coverage)
-  faces:new Set(),       // faces we have attempted to register with the browser
-  faceOk:new Set()       // faces the browser accepted
+  fkCache:new Map()      // loadedName -> parsed fontkit font (glyph coverage)
 };
 
 /* ── little helpers ─────────────────────────────────────── */
@@ -644,11 +642,11 @@ async function openPdf(file){
   S.name=file.name;
   const buf=await file.arrayBuffer();
   S.bytes=buf.slice(0);
-  try{ S.doc=await pdfjsLib.getDocument({data:buf.slice(0), disableFontFace:true, useSystemFonts:false}).promise; }
+  try{ S.doc=await pdfjsLib.getDocument({data:buf.slice(0), fontExtraProperties:true}).promise; }
   catch(err){ toast("That file could not be opened: "+err.message, 5000); return; }
 
   S.n=S.doc.numPages; S.pages=[]; S.undoStack=[]; S.redoStack=[];
-  S.fontFiles.clear(); S.fkCache.clear(); S.faces.clear(); S.faceOk.clear();
+  S.fontFiles.clear(); S.fkCache.clear();
   for(let i=1;i<=S.n;i++){
     const pg=await S.doc.getPage(i);
     const vp=pg.getViewport({scale:1});
@@ -677,13 +675,12 @@ async function openPdf(file){
     `${S.pages.reduce((a,p)=>a+p.lines.length,0)} editable text lines` +
     (S.pages.filter(p=>p.scanned).length ? ` · ${S.pages.filter(p=>p.scanned).length} scanned` : "");
 
-  // say plainly whether the real fonts came back, so a silent fallback is never a mystery
   setTimeout(()=>{
     const got=S.fontFiles.size;
     $("#docInfo").textContent += got
       ? ` · ${got} original font${got===1?"":"s"} recovered, edits keep the real typeface`
-      : " · no embedded font could be recovered, edits will use a substitute";
-  }, 500);
+      : " · no embedded font recovered, edits will use a substitute";
+  }, 600);
 
   fitWidth();
   syncHistoryButtons();
@@ -864,31 +861,12 @@ function harvestFonts(p){
         const b=atob(o.src.split(",")[1]);
         d=Uint8Array.from(b, c=>c.charCodeAt(0));
       }
-      if(d && d.length>4){
-        const bytes = d instanceof Uint8Array ? d.slice() : new Uint8Array(d);
-        S.fontFiles.set(name, bytes);
-        registerFace(name, bytes);
-      }
+      if(d && d.length>4) S.fontFiles.set(name, d instanceof Uint8Array ? d : new Uint8Array(d));
     }catch{}
   }
 }
 
 /* does this font actually contain every character being typed? */
-/* Make the harvested font usable as a CSS family, so what you see while
-   editing is the same typeface that gets written into the file. */
-function registerFace(name, bytes){
-  if(S.faces.has(name) || typeof FontFace==="undefined") return;
-  S.faces.add(name);
-  try{
-    const ff=new FontFace(name, bytes.slice().buffer);
-    ff.load().then(loaded=>{
-      document.fonts.add(loaded);
-      S.faceOk.add(name);
-      S.pages.forEach(p=>{ if(p.el) paintPage(p); });
-    }).catch(()=>{});
-  }catch(e){}
-}
-
 function coversText(name, txt){
   if(!S.fontFiles.has(name) || typeof fontkit==="undefined") return false;
   let fk=S.fkCache.get(name);
@@ -910,7 +888,7 @@ function coversText(name, txt){
 function previewFamily(l){
   const fallback=CSS_FAM[famOf(l.font)];
   if(l.ov && l.ov.fam) return CSS_FAM[l.ov.fam];
-  return (l.font && S.faceOk.has(l.font)) ? `"${l.font}",${fallback}` : fallback;
+  return l.font ? `"${l.font}",${fallback}` : fallback;
 }
 const usesEmbedded = l => !(l.ov && l.ov.fam) && S.fontFiles.has(l.font);
 
